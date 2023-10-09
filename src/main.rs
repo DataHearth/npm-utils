@@ -2,12 +2,10 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
-    time::Duration,
 };
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use indicatif::ProgressBar;
 use semver::VersionReq;
 use version::parser_multi_requirements;
 
@@ -188,26 +186,22 @@ fn fetch(
 
     for (name, version) in pkgs {
         for v in version {
-            let pb = ProgressBar::new_spinner();
-            pb.enable_steady_tick(Duration::from_millis(100));
-            pb.set_message(format!("{name}: Resolving dependencies"));
+            println!("{name}: Resolving dependencies...");
 
             manuel_extend(
                 registry.fetch_package_deps(name.clone(), v, dev, peer, optional, dispatch)?,
                 &mut tbd,
             );
 
-            pb.finish_with_message(format!("{name}: Resolved"));
+            println!("{name}: Resolved");
         }
     }
 
-    let pb = ProgressBar::new(tbd.len() as u64);
-    pb.set_message("Downloading packages...");
+    println!("Downloading {} packages...", tbd.len());
 
     tbd.iter().for_each(|(package, versions)| {
         // println!("Downloading: {name}@{version}", name = v.0, version = v.1)
         versions.iter().for_each(|(tag, manifest)| {
-            pb.inc(1);
             let x = registry.download_dist(
                 manifest.dist.shasum.to_owned(),
                 manifest.dist.tarball.to_owned(),
@@ -217,15 +211,12 @@ fn fetch(
             if x.is_ok() {
                 // pb.println(format!("{package}@{tag}: Downloaded at {}", x.unwrap()));
             } else {
-                pb.println(format!(
-                    "{package}@{tag}: Failed to download => {}",
-                    x.unwrap_err()
-                ));
+                println!("{package}@{tag}: Failed to download => {}", x.unwrap_err());
             }
         });
     });
 
-    pb.finish_with_message("Packages downloaded!");
+    println!("Packages downloaded!");
 
     Ok(())
 }

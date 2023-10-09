@@ -123,6 +123,7 @@ impl Registry {
         }
 
         for (dep, version) in deps {
+            println!("{}@{}", dep, version);
             if let Ok(requirements) = parser_multi_requirements(&version) {
                 let sub_deps = self.fetch_package_deps(
                     dep,
