@@ -2,18 +2,23 @@ use std::{
     collections::{HashMap, HashSet},
     fs,
     path::PathBuf,
+    time::Duration,
 };
 
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
+use indicatif::ProgressBar;
 use semver::VersionReq;
+use version::parser_multi_requirements;
 
-use crate::{registry::Registry, serde::PackageJson};
+use crate::{
+    registry::{manuel_extend, Registry},
+    serde::PackageJson,
+};
 
 mod registry;
 mod serde;
-
-type ListPkgs = HashMap<String, HashSet<Option<VersionReq>>>;
+mod version;
 
 /// Download NodeJS dependencies from an npm registry for offline use
 #[derive(Parser, Debug)]
@@ -52,6 +57,9 @@ enum Subcommands {
         #[arg(long)]
         optional_dependencies: bool,
 
+        #[arg(long)]
+        dispatch_sub_dependencies: bool,
+
         /// Compress tarballs into a single one. Output path will be "output" the flag with ".tar.gz" extension
         #[arg(short, long)]
         compress: bool,
@@ -80,6 +88,7 @@ fn main() -> Result<()> {
             optional_dependencies,
             registry,
             compress,
+            dispatch_sub_dependencies,
         } => fetch(
             packages,
             output,
@@ -88,8 +97,12 @@ fn main() -> Result<()> {
             optional_dependencies,
             registry,
             compress,
+            dispatch_sub_dependencies,
         ),
-        Subcommands::Publish { packages, registry } => todo!(),
+        Subcommands::Publish {
+            packages: _,
+            registry: _,
+        } => todo!(),
     }
 }
 
@@ -100,9 +113,10 @@ fn fetch(
     peer: bool,
     optional: bool,
     registry: Option<String>,
-    compress: bool,
+    _compress: bool,
+    dispatch: bool,
 ) -> Result<()> {
-    let mut pkgs: ListPkgs = HashMap::new();
+    let mut pkgs: HashMap<String, HashSet<Option<Vec<VersionReq>>>> = HashMap::new();
 
     for arg in args {
         let mut path = PathBuf::from(arg.clone());
@@ -130,7 +144,7 @@ fn fetch(
                 .insert(if version == "latest" {
                     None
                 } else {
-                    Some(VersionReq::parse(&version)?)
+                    Some(parser_multi_requirements(&version)?)
                 });
         }
         if dev {
@@ -140,7 +154,7 @@ fn fetch(
                     .insert(if version == "latest" {
                         None
                     } else {
-                        Some(VersionReq::parse(&version)?)
+                        Some(parser_multi_requirements(&version)?)
                     });
             }
         }
@@ -151,7 +165,7 @@ fn fetch(
                     .insert(if version == "latest" {
                         None
                     } else {
-                        Some(VersionReq::parse(&version)?)
+                        Some(parser_multi_requirements(&version)?)
                     });
             }
         }
@@ -162,33 +176,67 @@ fn fetch(
                     .insert(if version == "latest" {
                         None
                     } else {
-                        Some(VersionReq::parse(&version)?)
+                        Some(parser_multi_requirements(&version)?)
                     });
             }
         }
     }
 
-    let registry = Registry::new()?;
+    let registry = Registry::new(registry)?;
+
+    let mut tbd = HashMap::new();
 
     for (name, version) in pkgs {
         for v in version {
-            let (pkg, version, dist) = registry.fetch_package_dist(name.clone(), v)?;
-            println!("{}@{}", pkg, version);
-            println!("  {}", dist.tarball);
-            let f_path = registry.download_dist(dist.shasum, dist.tarball)?;
-            println!("Tarball saved to {}", f_path);
+            let pb = ProgressBar::new_spinner();
+            pb.enable_steady_tick(Duration::from_millis(100));
+            pb.set_message(format!("{name}: Resolving dependencies"));
+
+            manuel_extend(
+                registry.fetch_package_deps(name.clone(), v, dev, peer, optional, dispatch)?,
+                &mut tbd,
+            );
+
+            pb.finish_with_message(format!("{name}: Resolved"));
         }
     }
 
-    todo!()
+    let pb = ProgressBar::new(tbd.len() as u64);
+    pb.set_message("Downloading packages...");
+
+    tbd.iter().for_each(|(package, versions)| {
+        // println!("Downloading: {name}@{version}", name = v.0, version = v.1)
+        versions.iter().for_each(|(tag, manifest)| {
+            pb.inc(1);
+            let x = registry.download_dist(
+                manifest.dist.shasum.to_owned(),
+                manifest.dist.tarball.to_owned(),
+                &output,
+            );
+
+            if x.is_ok() {
+                // pb.println(format!("{package}@{tag}: Downloaded at {}", x.unwrap()));
+            } else {
+                pb.println(format!(
+                    "{package}@{tag}: Failed to download => {}",
+                    x.unwrap_err()
+                ));
+            }
+        });
+    });
+
+    pb.finish_with_message("Packages downloaded!");
+
+    Ok(())
 }
 
-fn publish(pkgs: Vec<String>, registry: String) {
+#[allow(dead_code)]
+fn publish(_pkgs: Vec<String>, _registry: String) {
     todo!()
 }
 
 /// Split a package string into a tuple of package name and version
-fn split_package_string(package: String) -> Result<(String, Option<VersionReq>)> {
+fn split_package_string(package: String) -> Result<(String, Option<Vec<VersionReq>>)> {
     let mut splitted = package.split('@').collect::<Vec<&str>>();
     if splitted.len() > 3 {
         return Err(anyhow!(
@@ -202,7 +250,7 @@ fn split_package_string(package: String) -> Result<(String, Option<VersionReq>)>
     let version = if splitted[1] == "latest" {
         None
     } else {
-        Some(VersionReq::parse(splitted[1])?)
+        Some(parser_multi_requirements(splitted[1])?)
     };
 
     return Ok((splitted[0].to_string(), version));

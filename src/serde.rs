@@ -23,7 +23,17 @@ pub struct PackageRsp {
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Version {
+    pub name: String,
+    pub version: String,
     pub dist: Dist,
+    #[serde(default = "HashMap::new")]
+    pub dependencies: HashMap<String, String>,
+    #[serde(rename = "devDependencies", default = "HashMap::new")]
+    pub dev_dependencies: HashMap<String, String>,
+    #[serde(rename = "peerDependencies", default = "HashMap::new")]
+    pub peer_dependencies: HashMap<String, String>,
+    #[serde(rename = "optionalDependencies", default = "HashMap::new")]
+    pub optional_dependencies: HashMap<String, String>,
 }
 
 #[derive(Default, Debug, Clone, PartialEq, Serialize, Deserialize)]
