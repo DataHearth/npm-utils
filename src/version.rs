@@ -1,55 +1,28 @@
 use anyhow::{anyhow, Result};
-use semver::VersionReq;
+use nom::{bytes::complete::take_while_m_n, combinator::map_res, IResult, Parser};
+use semver::{Op, VersionReq};
 
-pub fn parser_multi_requirements(req: &str) -> Result<Vec<VersionReq>> {
-    let mut splitted = req.split_whitespace();
-
-    let mut requirements = vec![];
-    let mut unfinished_requirement = String::new();
-
-    loop {
-        let v = splitted.next();
-        if v.is_none() {
-            if unfinished_requirement.len() > 0 {
-                requirements.push(semver::VersionReq::parse(&unfinished_requirement)?);
-            }
-
-            return Ok(requirements);
-        }
-
-        match v.unwrap() {
-            "||" => {
-                if unfinished_requirement.len() == 0 {
-                    return Err(anyhow!(
-                        "requirement cannot start or chain operators with '||'"
-                    ));
-                }
-
-                requirements.push(VersionReq::parse(&unfinished_requirement)?);
-                unfinished_requirement = String::new();
-            }
-            "<" | ">" | "<=" | ">=" => {
-                if unfinished_requirement.len() == 0 {
-                    unfinished_requirement.push_str(v.unwrap());
-                } else {
-                    unfinished_requirement.push_str(&format!(", {}", v.unwrap()));
-                }
-            }
-            "-" => {
-                unfinished_requirement = format!(">={}, <=", unfinished_requirement);
-            }
-            _ => {
-                unfinished_requirement.push_str(v.unwrap());
-            }
-        }
+fn from_operator(input: &str) -> Result<Op> {
+    match input {
+        "<" => Ok(Op::Less),
+        "<=" => Ok(Op::LessEq),
+        ">" => Ok(Op::Greater),
+        ">=" => Ok(Op::GreaterEq),
+        "=" => Ok(Op::Exact),
+        "~" => Ok(Op::Tilde),
+        "^" => Ok(Op::Caret),
+        _ => Err(anyhow!("invalid operator")),
     }
 }
 
-pub fn display_multi(requirements: Vec<VersionReq>) -> String {
-    let mut output = String::new();
-    for req in requirements {
-        output.push_str(&format!("{},", req.to_string()));
-    }
+fn check_operator(c: char) -> bool {
+    todo!()
+}
 
-    output
+fn parse_range(input: &str) -> IResult<&str, Op> {
+    map_res(take_while_m_n(0, 2, check_operator), from_operator).parse(input)
+}
+
+pub fn parse(input: &str) -> IResult<&str, VersionReq> {
+    todo!()
 }

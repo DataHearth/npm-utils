@@ -189,7 +189,7 @@ fn fetch(
             println!("{name}: Resolving dependencies...");
 
             manuel_extend(
-                registry.fetch_package_deps(name.clone(), v, dev, peer, optional, dispatch)?,
+                registry.fetch_dependencies(name.clone(), v, dev, peer, optional, dispatch)?,
                 &mut tbd,
             );
 
@@ -202,7 +202,7 @@ fn fetch(
     tbd.iter().for_each(|(package, versions)| {
         // println!("Downloading: {name}@{version}", name = v.0, version = v.1)
         versions.iter().for_each(|(tag, manifest)| {
-            let x = registry.download_dist(
+            let x = registry.download_distribution(
                 manifest.dist.shasum.to_owned(),
                 manifest.dist.tarball.to_owned(),
                 &output,

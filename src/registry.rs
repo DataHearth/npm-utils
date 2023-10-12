@@ -40,7 +40,7 @@ impl Registry {
 
     /// Fetch package version and its dependencies from registry.
     /// First entry in returned vector is the top-level package
-    pub fn fetch_package_deps(
+    pub fn fetch_dependencies(
         &self,
         package: String,
         version_req: Option<Vec<VersionReq>>,
@@ -123,9 +123,8 @@ impl Registry {
         }
 
         for (dep, version) in deps {
-            println!("{}@{}", dep, version);
             if let Ok(requirements) = parser_multi_requirements(&version) {
-                let sub_deps = self.fetch_package_deps(
+                let sub_deps = self.fetch_dependencies(
                     dep,
                     Some(requirements),
                     dev && dispatch,
@@ -142,7 +141,12 @@ impl Registry {
         Ok(pkgs)
     }
 
-    pub fn download_dist(&self, tarball_sum: String, url: String, output: &str) -> Result<String> {
+    pub fn download_distribution(
+        &self,
+        tarball_sum: String,
+        url: String,
+        output: &str,
+    ) -> Result<String> {
         let parsed_url = Url::parse(&url)?;
         let filename = parsed_url
             .path_segments()
