@@ -1,19 +1,20 @@
-use std::io;
+use std::num::ParseIntError;
 
 use nom::{
     branch::alt,
     bytes::complete::{take_while, take_while_m_n},
     character,
     combinator::map_res,
+    error,
     sequence::{terminated, tuple},
-    IResult, Parser,
+    Err, IResult, Parser,
 };
 use semver::{Comparator, Op, Prerelease, VersionReq};
 
 const OPERATOR_LIST: [char; 5] = ['<', '>', '=', '~', '^'];
 
-/// Map string to corresponding `semver::Op` enum
-fn from_operator(input: &str) -> Result<Op, io::Error> {
+/// Map string to corresponding `semver::Op`
+fn from_operator(input: &str) -> Result<Op, Err<error::Error<&str>>> {
     match input {
         "<" => Ok(Op::Less),
         "<=" => Ok(Op::LessEq),
@@ -22,14 +23,14 @@ fn from_operator(input: &str) -> Result<Op, io::Error> {
         "=" => Ok(Op::Exact),
         "~" => Ok(Op::Tilde),
         "^" => Ok(Op::Caret),
-        _ => Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "invalid operator",
-        )),
+        _ => Err(Err::Error(error::Error::new(
+            input,
+            error::ErrorKind::IsNot,
+        ))),
     }
 }
 
-/// Parse a range operator included in `OPERATOR_LIST`
+/// Parse a range operator into `semver::Op`
 fn parse_range(input: &str) -> IResult<&str, Op> {
     let res: IResult<&str, Op> = map_res(
         take_while_m_n(0, 2, |c| OPERATOR_LIST.contains(&c)),
@@ -52,24 +53,23 @@ fn parse_range(input: &str) -> IResult<&str, Op> {
 
 /// Parse a version string into `(major, minor, patch)`
 fn parse_version(input: &str) -> IResult<&str, (u64, Option<u64>, Option<u64>)> {
-    let (input, (major, minor, patch)) = map_res::<_, _, _, _, std::num::ParseIntError, _, _>(
+    let (input, (major, minor, patch)) = map_res::<_, _, _, _, ParseIntError, _, _>(
         alt((
             tuple((
                 terminated(character::complete::digit0, character::complete::char('.')),
                 terminated(character::complete::digit0, character::complete::char('.')),
                 character::complete::digit0,
             )),
-            map_res::<_, _, _, _, nom::error::Error<&str>, _, _>(
+            map_res::<_, _, _, _, error::Error<&str>, _, _>(
                 tuple((
                     terminated(character::complete::digit0, character::complete::char('.')),
                     character::complete::digit0,
                 )),
                 |(major, minor)| Ok((major, minor, "")),
             ),
-            map_res::<_, _, _, _, nom::error::Error<&str>, _, _>(
-                character::complete::digit0,
-                |major| Ok((major, "", "")),
-            ),
+            map_res::<_, _, _, _, error::Error<&str>, _, _>(character::complete::digit0, |major| {
+                Ok((major, "", ""))
+            }),
         )),
         |(major, minor, patch): (&str, &str, &str)| {
             let major = major.parse::<u64>()?;
@@ -91,6 +91,7 @@ fn parse_version(input: &str) -> IResult<&str, (u64, Option<u64>, Option<u64>)> 
     Ok((input.trim_start(), (major, minor, patch)))
 }
 
+/// Parse a prerelease string into `semver::Prerelease`
 fn parse_pre(input: &str) -> IResult<&str, Prerelease> {
     let (input, pre) = take_while(|c: char| !c.is_whitespace())(input.trim_start_matches('-'))?;
 
