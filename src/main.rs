@@ -7,13 +7,14 @@ use std::{
 use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
 use semver::VersionReq;
-use version::parser_multi_requirements;
+use version::parse;
 
 use crate::{
     registry::{manuel_extend, Registry},
     serde::PackageJson,
 };
 
+mod errors;
 mod registry;
 mod serde;
 mod version;
@@ -122,9 +123,9 @@ fn fetch(
             let (name, version) = split_package_string(arg)?;
             pkgs.entry(name).or_default().insert(version);
 
-            // TODO: get package manifest from registry and retrieve all dependencies
             continue;
         }
+
         if path.is_dir() {
             path = path.join("package.json");
             if !path.exists() {
@@ -142,7 +143,7 @@ fn fetch(
                 .insert(if version == "latest" {
                     None
                 } else {
-                    Some(parser_multi_requirements(&version)?)
+                    Some(parse(&version)?)
                 });
         }
         if dev {
@@ -152,7 +153,7 @@ fn fetch(
                     .insert(if version == "latest" {
                         None
                     } else {
-                        Some(parser_multi_requirements(&version)?)
+                        Some(parse(&version)?)
                     });
             }
         }
@@ -163,7 +164,7 @@ fn fetch(
                     .insert(if version == "latest" {
                         None
                     } else {
-                        Some(parser_multi_requirements(&version)?)
+                        Some(parse(&version)?)
                     });
             }
         }
@@ -174,7 +175,7 @@ fn fetch(
                     .insert(if version == "latest" {
                         None
                     } else {
-                        Some(parser_multi_requirements(&version)?)
+                        Some(parse(&version)?)
                     });
             }
         }
@@ -200,7 +201,6 @@ fn fetch(
     println!("Downloading {} packages...", tbd.len());
 
     tbd.iter().for_each(|(package, versions)| {
-        // println!("Downloading: {name}@{version}", name = v.0, version = v.1)
         versions.iter().for_each(|(tag, manifest)| {
             let x = registry.download_distribution(
                 manifest.dist.shasum.to_owned(),
@@ -234,14 +234,14 @@ fn split_package_string(package: String) -> Result<(String, Option<Vec<VersionRe
             "package name can only contains a maximum of 2 '@'. Found {}",
             splitted.len() - 1
         ));
-    } else if splitted.len() == 2 {
+    } else if splitted.len() == 3 {
         splitted.remove(0);
     }
 
     let version = if splitted[1] == "latest" {
         None
     } else {
-        Some(parser_multi_requirements(splitted[1])?)
+        Some(parse(splitted[1])?)
     };
 
     return Ok((splitted[0].to_string(), version));

@@ -14,7 +14,7 @@ use url::Url;
 
 use crate::{
     serde::{PackageRsp, Version},
-    version::{display_multi, parser_multi_requirements},
+    version::parse,
 };
 
 const REGISTRY_URL: &str = "https://registry.npmjs.org";
@@ -55,7 +55,7 @@ impl Registry {
             .send()?;
 
         if !rsp.status().is_success() {
-            let body: serde_json::Value = rsp.json()?;
+            let body = rsp.json::<serde_json::Value>()?;
             return Err(anyhow!(
                 "failed to fetch package manifest: {}",
                 body.as_object()
@@ -65,12 +65,12 @@ impl Registry {
             ));
         }
 
-        let mut pkgs: HashMap<String, HashMap<String, Version>> = HashMap::new();
-        let rsp: PackageRsp = rsp.json()?;
+        let mut pkgs = HashMap::new();
+        let rsp = rsp.json::<PackageRsp>()?;
         let v = if let Some(version_req) = version_req {
             let mut found = None;
-            for (tag, v) in rsp.versions {
-                let parsed_v = semver::Version::parse(&tag)?;
+            for (tag, v) in rsp.versions.iter().rev() {
+                let parsed_v = semver::Version::parse(tag)?;
                 let matched = version_req
                     .iter()
                     .find(|req| req.matches(&parsed_v))
@@ -80,17 +80,14 @@ impl Registry {
                 }
 
                 if matched {
-                    found = Some(v);
+                    found = Some(v.clone());
                 }
             }
 
             if let Some(version) = found {
                 version
             } else {
-                return Err(anyhow!(
-                    "no version found for {package}@{}",
-                    display_multi(version_req)
-                ));
+                return Err(anyhow!("no version found for {package}@{:?}", version_req));
             }
         } else {
             let tag = rsp
@@ -123,10 +120,11 @@ impl Registry {
         }
 
         for (dep, version) in deps {
-            if let Ok(requirements) = parser_multi_requirements(&version) {
+            let res = parse(&version);
+            if res.is_ok() {
                 let sub_deps = self.fetch_dependencies(
                     dep,
-                    Some(requirements),
+                    Some(res.unwrap()),
                     dev && dispatch,
                     peer && dispatch,
                     optional && dispatch,
@@ -134,7 +132,10 @@ impl Registry {
                 )?;
                 manuel_extend(sub_deps, &mut pkgs);
             } else {
-                println!("{dep}@{version}: failed to parse requirement version. Skipping...");
+                println!(
+                    "{dep}@{version}: failed to parse requirement version {}",
+                    res.unwrap_err()
+                );
             }
         }
 

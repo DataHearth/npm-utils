@@ -8,9 +8,13 @@ use serde::Serialize;
 #[serde(rename_all = "camelCase")]
 pub struct PackageJson {
     pub name: String,
+    #[serde(default = "HashMap::new")]
     pub dependencies: HashMap<String, String>,
+    #[serde(default = "HashMap::new")]
     pub dev_dependencies: HashMap<String, String>,
+    #[serde(default = "HashMap::new")]
     pub peer_dependencies: HashMap<String, String>,
+    #[serde(default = "HashMap::new")]
     pub optional_dependencies: HashMap<String, String>,
 }
 
