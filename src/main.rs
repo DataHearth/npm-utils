@@ -1,36 +1,30 @@
-use std::{
-    collections::{HashMap, HashSet},
-    fs,
-    path::PathBuf,
-};
-
-use anyhow::{anyhow, Result};
 use clap::{Parser, Subcommand};
-use semver::VersionReq;
-use version::parse;
+use commands::{download, publish};
 
-use crate::{
-    registry::{manuel_extend, Registry},
-    serde::PackageJson,
-};
-
+mod commands;
 mod errors;
+mod macros;
 mod registry;
 mod serde;
 mod version;
+mod utils;
 
 /// Download NodeJS dependencies from an npm registry for offline use
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Cli {
+    /// Remote registry to use
+    #[arg(short, long)]
+    registry: Option<String>,
+
     #[command(subcommand)]
     subcommands: Subcommands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Subcommands {
-    /// Fetch tarballs dependencies from an npm registry for a given package
-    Fetch {
+    /// Download tarballs dependencies from an npm registry for a given package
+    Download {
         /// List of packages with their version (express@4.18.2) or list of "package.json" files.
         /// Space separated
         #[arg(required = true)]
@@ -39,10 +33,6 @@ enum Subcommands {
         /// Output directory for all tarballs
         #[arg(short = 'o', long, default_value_t = String::from("./packages"))]
         output: String,
-
-        /// Remote registry to use
-        #[arg(short, long)]
-        registry: Option<String>,
 
         /// Include devDependencies
         #[arg(short = 'd', long)]
@@ -68,181 +58,43 @@ enum Subcommands {
     Publish {
         /// List of tarballs path to publish. Path can be a directory. Space separated
         packages: Vec<String>,
+    },
 
-        /// Remote registry to use
-        #[arg(short, long)]
-        registry: String,
+    Resolve {
+        packages: Vec<String>,
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
     let args = Cli::parse();
 
-    match args.subcommands {
-        Subcommands::Fetch {
+    let remote_registry = args.registry;
+
+    let res = match args.subcommands {
+        Subcommands::Download {
             packages,
             output,
             dev_dependencies,
             peer_dependencies,
             optional_dependencies,
-            registry,
             compress,
             dispatch_sub_dependencies,
-        } => fetch(
+        } => download(
             packages,
             output,
             dev_dependencies,
             peer_dependencies,
             optional_dependencies,
-            registry,
+            remote_registry,
             compress,
             dispatch_sub_dependencies,
         ),
-        Subcommands::Publish {
-            packages: _,
-            registry: _,
-        } => todo!(),
-    }
-}
-
-fn fetch(
-    args: Vec<String>,
-    output: String,
-    dev: bool,
-    peer: bool,
-    optional: bool,
-    registry: Option<String>,
-    _compress: bool,
-    dispatch: bool,
-) -> Result<()> {
-    let mut pkgs: HashMap<String, HashSet<Option<Vec<VersionReq>>>> = HashMap::new();
-
-    for arg in args {
-        let mut path = PathBuf::from(arg.clone());
-        if !path.exists() {
-            let (name, version) = split_package_string(arg)?;
-            pkgs.entry(name).or_default().insert(version);
-
-            continue;
-        }
-
-        if path.is_dir() {
-            path = path.join("package.json");
-            if !path.exists() {
-                return Err(anyhow!(
-                    "package.json not found in directory {}",
-                    path.display()
-                ));
-            }
-        }
-
-        let pkg_json: PackageJson = serde_json::from_str(&fs::read_to_string(path)?)?;
-        for (name, version) in pkg_json.dependencies {
-            pkgs.entry(name)
-                .or_default()
-                .insert(if version == "latest" {
-                    None
-                } else {
-                    Some(parse(&version)?)
-                });
-        }
-        if dev {
-            for (name, version) in pkg_json.dev_dependencies {
-                pkgs.entry(name)
-                    .or_default()
-                    .insert(if version == "latest" {
-                        None
-                    } else {
-                        Some(parse(&version)?)
-                    });
-            }
-        }
-        if peer {
-            for (name, version) in pkg_json.peer_dependencies {
-                pkgs.entry(name)
-                    .or_default()
-                    .insert(if version == "latest" {
-                        None
-                    } else {
-                        Some(parse(&version)?)
-                    });
-            }
-        }
-        if optional {
-            for (name, version) in pkg_json.optional_dependencies {
-                pkgs.entry(name)
-                    .or_default()
-                    .insert(if version == "latest" {
-                        None
-                    } else {
-                        Some(parse(&version)?)
-                    });
-            }
-        }
-    }
-
-    let registry = Registry::new(registry)?;
-
-    let mut tbd = HashMap::new();
-
-    for (name, version) in pkgs {
-        for v in version {
-            println!("{name}: Resolving dependencies...");
-
-            manuel_extend(
-                registry.fetch_dependencies(name.clone(), v, dev, peer, optional, dispatch)?,
-                &mut tbd,
-            );
-
-            println!("{name}: Resolved");
-        }
-    }
-
-    println!("Downloading {} packages...", tbd.len());
-
-    tbd.iter().for_each(|(package, versions)| {
-        versions.iter().for_each(|(tag, manifest)| {
-            let x = registry.download_distribution(
-                manifest.dist.shasum.to_owned(),
-                manifest.dist.tarball.to_owned(),
-                &output,
-            );
-
-            if x.is_ok() {
-                // pb.println(format!("{package}@{tag}: Downloaded at {}", x.unwrap()));
-            } else {
-                println!("{package}@{tag}: Failed to download => {}", x.unwrap_err());
-            }
-        });
-    });
-
-    println!("Packages downloaded!");
-
-    Ok(())
-}
-
-#[allow(dead_code)]
-fn publish(_pkgs: Vec<String>, _registry: String) {
-    todo!()
-}
-
-/// Split a package string into a tuple of package name and version
-fn split_package_string(package: String) -> Result<(String, Option<Vec<VersionReq>>)> {
-    let mut splitted = package.split('@').collect::<Vec<&str>>();
-    if splitted.len() > 3 {
-        return Err(anyhow!(
-            "package name can only contains a maximum of 2 '@'. Found {}",
-            splitted.len() - 1
-        ));
-    } else if splitted.len() == 3 {
-        splitted.remove(0);
-    }
-
-    let version = if splitted[1] == "latest" {
-        None
-    } else {
-        Some(parse(splitted[1])?)
+        Subcommands::Publish { packages } => publish(packages, remote_registry),
+        Subcommands::Resolve { packages: _ } => todo!(),
     };
 
-    return Ok((splitted[0].to_string(), version));
+    if let Err(e) = res {
+        eprintln!("{e}");
+        std::process::exit(1);
+    }
 }

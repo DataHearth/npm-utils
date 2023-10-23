@@ -6,7 +6,6 @@ authors = ["Antoine Langlois <antoine.l@antoine-langlois.net>"]
 description = "A tool to download npm packages and their dependencies for offline usage."
 
 [dependencies]
-anyhow = "1.0"
 base16ct = { version = "0.2", features = ["alloc"] }
 clap = { version = "4.4", features = ["derive"] }
 nom = "7.1"

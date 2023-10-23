@@ -1,37 +1,17 @@
-use std::num::ParseIntError;
-
 use nom::{
     branch::alt,
     bytes::complete::{tag, take_while, take_while_m_n},
     character,
     combinator::map_res,
-    error::{self, context, convert_error, VerboseError},
-    multi::many0,
+    error::{context, VerboseError},
     sequence::{terminated, tuple},
 };
-use semver::{Comparator, Op, Prerelease, VersionReq};
+use semver::{Comparator, Op, Prerelease};
 
-const OPERATOR_LIST: [char; 5] = ['<', '>', '=', '~', '^'];
+use super::from::{from_operator, from_version};
 
 type IResult<R, O> = nom::IResult<R, O, VerboseError<R>>;
-
-/// Map string to corresponding `semver::Op`
-fn from_operator(input: &str) -> Result<Op, nom::Err<error::Error<&str>>> {
-    if input.is_empty() {
-        return Ok(Op::Exact);
-    }
-
-    match input {
-        "<" => Ok(Op::Less),
-        "<=" => Ok(Op::LessEq),
-        ">" => Ok(Op::Greater),
-        ">=" => Ok(Op::GreaterEq),
-        "=" => Ok(Op::Exact),
-        "~" => Ok(Op::Tilde),
-        "^" => Ok(Op::Caret),
-        _ => panic!("parsing invalid operator"),
-    }
-}
+const OPERATOR_LIST: [char; 5] = ['<', '>', '=', '~', '^'];
 
 /// Parse a range operator into `semver::Op`
 fn parse_range(input: &str) -> IResult<&str, Op> {
@@ -56,38 +36,6 @@ fn terminated_number(input: &str) -> IResult<&str, &str> {
         "intermediate-version-number",
         terminated(wildcard_or_digit, character::complete::char('.')),
     )(input)
-}
-
-fn from_version(
-    version: (&str, &str, &str),
-) -> Result<(u64, Option<i64>, Option<i64>), ParseIntError> {
-    let (major, minor, patch) = version;
-
-    let major = major.parse::<u64>()?;
-    let minor = if !minor.is_empty() {
-        Some(
-            if minor == "*" || minor.chars().all(|v| v.is_alphabetic()) {
-                -1
-            } else {
-                minor.parse::<i64>()?
-            },
-        )
-    } else {
-        None
-    };
-    let patch = if !patch.is_empty() {
-        Some(
-            if patch == "*" || patch.chars().all(|v| v.is_alphabetic()) {
-                -1
-            } else {
-                patch.parse::<i64>()?
-            },
-        )
-    } else {
-        None
-    };
-
-    Ok((major, minor, patch))
 }
 
 /// Parse a version string into `(major, minor, patch)`
@@ -138,7 +86,7 @@ fn parse_pre(input: &str) -> IResult<&str, Prerelease> {
 }
 
 /// Parse a version string into `semver::VersionReq`
-fn parse_comparator(input: &str) -> IResult<&str, Comparator> {
+pub(super) fn parse_comparator(input: &str) -> IResult<&str, Comparator> {
     let (input, mut op) = context("range-operator", parse_range)(input)?;
     let (input, (major, minor, patch)) = context("version", parse_version)(input.trim_start())?;
     let (input, pre) = context("pre-release", parse_pre)(input.trim_start())?;
@@ -173,62 +121,4 @@ fn parse_comparator(input: &str) -> IResult<&str, Comparator> {
             pre,
         },
     ))
-}
-
-pub fn parse(input: &str) -> Result<Vec<VersionReq>, crate::errors::Error> {
-    let original = input;
-
-    if input == "*" {
-        return Ok(vec![VersionReq::STAR]);
-    }
-
-    let mut reqs = vec![];
-    let mut req = VersionReq::default();
-
-    let (input, result) = context(
-        "semver",
-        many0(alt((
-            map_res(tag("||"), |_| -> Result<(bool, Option<Comparator>), &str> {
-                Ok((true, None))
-            }),
-            map_res(
-                parse_comparator,
-                |v| -> Result<(bool, Option<Comparator>), &str> { Ok((false, Some(v))) },
-            ),
-        ))),
-    )(input.trim_start())
-    .map_err(|e| {
-        crate::errors::Error::VersionParse(convert_error(
-            input,
-            match e {
-                nom::Err::Incomplete(_) => VerboseError {
-                    errors: vec![(input, error::VerboseErrorKind::Context("incomplete input"))],
-                },
-                nom::Err::Error(e) => e,
-                nom::Err::Failure(e) => e,
-            },
-        ))
-    })?;
-
-    if !input.is_empty() {
-        return Err(crate::errors::Error::VersionParse(format!(
-            "trailing characters in version (\"{original}\"): {input}"
-        )));
-    }
-
-    for (new, comp) in result {
-        if !new {
-            req.comparators.push(comp.clone().unwrap());
-            continue;
-        }
-
-        reqs.push(req);
-        req = VersionReq::default();
-    }
-
-    if req.comparators.len() > 0 {
-        reqs.push(req);
-    }
-
-    Ok(reqs)
 }

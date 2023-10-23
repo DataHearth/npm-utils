@@ -5,42 +5,44 @@ use std::{
     path::Path,
 };
 
-use anyhow::{anyhow, Result};
-use reqwest::header::{ACCEPT, USER_AGENT};
+use reqwest::header::{HeaderValue, ACCEPT, USER_AGENT};
 use semver::VersionReq;
 use serde_json::Value;
 use sha1::{Digest, Sha1};
 use url::Url;
 
 use crate::{
+    errors::CustomErrors,
+    hashmap, hashmap_ext_cond, headers,
     serde::{PackageRsp, Version},
+    utils::find_version,
     version::parse,
 };
 
 const REGISTRY_URL: &str = "https://registry.npmjs.org";
 
-pub struct Registry {
+pub(super) struct Registry {
     client: reqwest::blocking::Client,
     registry: String,
 }
 
 impl Registry {
-    pub fn new(registry: Option<String>) -> Result<Self> {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(ACCEPT, "application/vnd.npm.install-v1+json".parse()?);
-        headers.insert(USER_AGENT, "npm-offline@v0.1.0".parse()?);
-
+    pub(super) fn new(registry: Option<String>) -> Result<Self, CustomErrors> {
         Ok(Self {
             client: reqwest::blocking::Client::builder()
-                .default_headers(headers)
-                .build()?,
+                .default_headers(headers!(
+                    (ACCEPT, "application/vnd.npm.install-v1+json"),
+                    (USER_AGENT, "npm-offline@v0.1.0")
+                ))
+                .build()
+                .map_err(|e| CustomErrors::HttpClient(e.to_string()))?,
             registry: registry.unwrap_or_else(|| REGISTRY_URL.to_string()),
         })
     }
 
     /// Fetch package version and its dependencies from registry.
     /// First entry in returned vector is the top-level package
-    pub fn fetch_dependencies(
+    pub(super) fn fetch_dependencies(
         &self,
         package: String,
         version_req: Option<Vec<VersionReq>>,
@@ -48,146 +50,131 @@ impl Registry {
         peer: bool,
         optional: bool,
         dispatch: bool,
-    ) -> Result<HashMap<String, HashMap<String, Version>>> {
+    ) -> Result<HashMap<String, HashMap<String, Version>>, CustomErrors> {
         let rsp = self
             .client
             .get(format!("{}/{}", self.registry, package))
-            .send()?;
+            .send()
+            .map_err(|e| CustomErrors::PackageManifestFetch(e.to_string()))?;
 
         if !rsp.status().is_success() {
-            let body = rsp.json::<serde_json::Value>()?;
-            return Err(anyhow!(
-                "failed to fetch package manifest: {}",
-                body.as_object()
+            return Err(CustomErrors::PackageManifestFetch(
+                rsp.json::<serde_json::Value>()
+                    .map_err(|e| CustomErrors::BodyParse("JSON".to_string(), e.to_string()))?
+                    .as_object()
                     .unwrap_or(&serde_json::Map::new())
                     .get("error")
                     .unwrap_or(&Value::String("no error in body".to_string()))
+                    .to_string(),
             ));
         }
 
-        let mut pkgs = HashMap::new();
-        let rsp = rsp.json::<PackageRsp>()?;
-        let v = if let Some(version_req) = version_req {
-            let mut found = None;
-            for (tag, v) in rsp.versions.iter().rev() {
-                let parsed_v = semver::Version::parse(tag)?;
-                let matched = version_req
-                    .iter()
-                    .find(|req| req.matches(&parsed_v))
-                    .is_some();
-                if !matched && found.is_some() {
-                    break;
-                }
+        let body = rsp
+            .json::<PackageRsp>()
+            .map_err(|e| CustomErrors::BodyParse("JSON".to_string(), e.to_string()))?;
 
-                if matched {
-                    found = Some(v.clone());
-                }
-            }
+        let pkg_version = find_version(
+            body.versions,
+            version_req,
+            body.dist_tags.get("latest").map(|v| v.as_str()),
+        )?
+        .ok_or(CustomErrors::Version(format!(
+            "no version found for {package}@latest"
+        )))?;
 
-            if let Some(version) = found {
-                version
-            } else {
-                return Err(anyhow!("no version found for {package}@{:?}", version_req));
-            }
-        } else {
-            let tag = rsp
-                .dist_tags
-                .get("latest")
-                .ok_or(anyhow!("latest dist-tag not found for {package}"))?;
-
-            if let Some(v) = rsp.versions.get(tag) {
-                v.to_owned()
-            } else {
-                return Err(anyhow!("{package}@latest alias {package}@{tag} not found"));
-            }
-        };
-
-        let mut pkg_map = HashMap::new();
-        pkg_map.insert(v.version.clone(), v.clone());
-        pkgs.insert(package, pkg_map);
-
-        // pkgs.push(version.clone());
-        let mut deps = HashMap::new();
-        deps.extend(v.dependencies);
-        if dev {
-            deps.extend(v.dev_dependencies);
-        }
-        if peer {
-            deps.extend(v.peer_dependencies);
-        }
-        if optional {
-            deps.extend(v.optional_dependencies);
+        let mut deps = hashmap!((
+            package,
+            hashmap!((pkg_version.version.clone(), pkg_version.clone()))
+        ));
+        for (dep, version) in hashmap_ext_cond!(
+            (true, pkg_version.dependencies),
+            (dev, pkg_version.dev_dependencies),
+            (peer, pkg_version.peer_dependencies),
+            (optional, pkg_version.optional_dependencies)
+        ) {
+            match parse(&version) {
+                Ok(v) => manuel_extend(
+                    self.fetch_dependencies(
+                        dep,
+                        Some(v),
+                        dev && dispatch,
+                        peer && dispatch,
+                        optional && dispatch,
+                        dispatch,
+                    )?,
+                    &mut deps,
+                ),
+                Err(e) => eprintln!("{dep}@{version}: failed to parse requirement version {e}"),
+            };
         }
 
-        for (dep, version) in deps {
-            let res = parse(&version);
-            if res.is_ok() {
-                let sub_deps = self.fetch_dependencies(
-                    dep,
-                    Some(res.unwrap()),
-                    dev && dispatch,
-                    peer && dispatch,
-                    optional && dispatch,
-                    dispatch,
-                )?;
-                manuel_extend(sub_deps, &mut pkgs);
-            } else {
-                println!(
-                    "{dep}@{version}: failed to parse requirement version {}",
-                    res.unwrap_err()
-                );
-            }
-        }
-
-        Ok(pkgs)
+        Ok(deps)
     }
 
-    pub fn download_distribution(
+    /// Download dependency tarball from registry. 
+    pub(super) fn download_tarball(
         &self,
         tarball_sum: String,
         url: String,
         output: &str,
-    ) -> Result<String> {
-        let parsed_url = Url::parse(&url)?;
+    ) -> Result<String, CustomErrors> {
+        let parsed_url = Url::parse(&url).map_err(|e| CustomErrors::Global(e.to_string()))?;
         let filename = parsed_url
             .path_segments()
-            .ok_or(anyhow!("failed to parse path segments from url: {}", url))?
+            .ok_or(CustomErrors::Global(format!(
+                "failed to parse path segments from url: {}",
+                url
+            )))?
             .last()
-            .ok_or(anyhow!("failed to get last path segment in url: {}", url))?;
+            .ok_or(CustomErrors::Global(format!(
+                "failed to get last path segment in url: {}",
+                url
+            )))?;
 
-        let res = self.client.get(url).send()?;
+        let res = self
+            .client
+            .get(url)
+            .send()
+            .map_err(|e| CustomErrors::PackageManifestFetch(e.to_string()))?;
 
         let dir = Path::new(output);
         if !dir.exists() {
-            create_dir(&dir)?;
+            create_dir(&dir).map_err(|e| CustomErrors::Fs(e.to_string()))?;
         }
         let file = dir.join(filename);
 
         let mut hasher = Sha1::new();
         if file.exists() {
-            let mut f = File::open(&file)?;
-            io::copy(&mut f, &mut hasher)?;
+            let mut f = File::open(&file).map_err(|e| CustomErrors::Fs(e.to_string()))?;
+            io::copy(&mut f, &mut hasher).map_err(|e| CustomErrors::Fs(e.to_string()))?;
 
             if base16ct::lower::encode_string(&hasher.finalize()) == tarball_sum {
                 return Ok(file
                     .to_str()
-                    .ok_or(anyhow!("failed to convert file path to string"))?
+                    .ok_or(CustomErrors::Global(
+                        "failed to convert file path to string".to_string(),
+                    ))?
                     .to_string());
             }
         }
 
-        let data = res.bytes()?;
+        let data = res
+            .bytes()
+            .map_err(|e| CustomErrors::BodyParse("BYTES".to_string(), e.to_string()))?;
 
-        let mut f = File::create(&file)?;
-        f.write_all(&data)?;
+        let mut f = File::create(&file).map_err(|e| CustomErrors::Fs(e.to_string()))?;
+        f.write_all(&data)
+            .map_err(|e| CustomErrors::Fs(e.to_string()))?;
         Ok(file
             .to_str()
-            .ok_or(anyhow!("failed to convert file path to string"))?
+            .ok_or(CustomErrors::Global(
+                "failed to convert file path to string".to_string(),
+            ))?
             .to_string())
     }
 }
 
-pub fn manuel_extend(
+pub(super) fn manuel_extend(
     src: HashMap<String, HashMap<String, Version>>,
     dst: &mut HashMap<String, HashMap<String, Version>>,
 ) {
