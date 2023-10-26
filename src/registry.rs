@@ -111,7 +111,7 @@ impl Registry {
         Ok(deps)
     }
 
-    /// Download dependency tarball from registry. 
+    /// Download dependency tarball from registry.
     pub(super) fn download_tarball(
         &self,
         tarball_sum: String,
@@ -156,6 +156,8 @@ impl Registry {
                     ))?
                     .to_string());
             }
+
+            println!("{}: checksum mismatch, redownloading...", filename);
         }
 
         let data = res
@@ -165,6 +167,7 @@ impl Registry {
         let mut f = File::create(&file).map_err(|e| CustomErrors::Fs(e.to_string()))?;
         f.write_all(&data)
             .map_err(|e| CustomErrors::Fs(e.to_string()))?;
+
         Ok(file
             .to_str()
             .ok_or(CustomErrors::Global(

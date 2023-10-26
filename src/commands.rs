@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet},
     fs,
     path::PathBuf,
 };
@@ -7,6 +7,7 @@ use std::{
 use semver::VersionReq;
 
 use crate::{
+    btree_insert_cond,
     errors::CustomErrors,
     registry::{manuel_extend, Registry},
     serde::PackageJson,
@@ -15,7 +16,7 @@ use crate::{
 };
 
 /// List of versions of a package
-type PackageVersions = BTreeSet<Option<Vec<VersionReq>>>;
+type PackageVersions = HashSet<Option<Vec<VersionReq>>>;
 type PackageList = BTreeMap<String, PackageVersions>;
 
 pub(super) fn download(
@@ -28,7 +29,7 @@ pub(super) fn download(
     _compress: bool,
     dispatch: bool,
 ) -> Result<(), CustomErrors> {
-    let mut pkgs: BTreeMap<String, HashSet<Option<Vec<VersionReq>>>> = BTreeMap::new();
+    let mut pkgs: PackageList = BTreeMap::new();
 
     for arg in args {
         let mut path = PathBuf::from(arg.clone());
@@ -53,48 +54,13 @@ pub(super) fn download(
             &fs::read_to_string(path).map_err(|e| CustomErrors::Fs(e.to_string()))?,
         )
         .map_err(|e| CustomErrors::Fs(e.to_string()))?;
-        for (name, version) in pkg_json.dependencies {
-            pkgs.entry(name)
-                .or_default()
-                .insert(if version == "latest" {
-                    None
-                } else {
-                    Some(parse(&version)?)
-                });
-        }
-        if dev {
-            for (name, version) in pkg_json.dev_dependencies {
-                pkgs.entry(name)
-                    .or_default()
-                    .insert(if version == "latest" {
-                        None
-                    } else {
-                        Some(parse(&version)?)
-                    });
-            }
-        }
-        if peer {
-            for (name, version) in pkg_json.peer_dependencies {
-                pkgs.entry(name)
-                    .or_default()
-                    .insert(if version == "latest" {
-                        None
-                    } else {
-                        Some(parse(&version)?)
-                    });
-            }
-        }
-        if optional {
-            for (name, version) in pkg_json.optional_dependencies {
-                pkgs.entry(name)
-                    .or_default()
-                    .insert(if version == "latest" {
-                        None
-                    } else {
-                        Some(parse(&version)?)
-                    });
-            }
-        }
+
+        btree_insert_cond!(
+            (true, pkgs, pkg_json.dependencies),
+            (dev, pkgs, pkg_json.dev_dependencies),
+            (peer, pkgs, pkg_json.peer_dependencies),
+            (optional, pkgs, pkg_json.optional_dependencies)
+        );
     }
 
     let registry = Registry::new(registry)?;

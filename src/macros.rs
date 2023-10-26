@@ -47,3 +47,22 @@ macro_rules! hashmap_ext_cond {
         }
     };
 }
+
+#[macro_export]
+macro_rules! btree_insert_cond {
+    ($( ($cond:expr, $src:expr, $deps:expr) ),+ $(,)?) => {
+            $(
+                if $cond {
+                    for (name, version) in $deps {
+                        $src.entry(name)
+                            .or_default()
+                            .insert(if version == "latest" {
+                                None
+                            } else {
+                                Some(parse(&version)?)
+                            });
+                    }
+                }
+            )+
+    };
+}
